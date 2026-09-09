@@ -1,76 +1,46 @@
 # Valheim Character Editor
 
-A small Windows tool to edit your own Valheim character save (`.fch`):
+Edits your own Valheim character saves (.fch). Remove the cheater flag, tweak
+skills and stats, clear the "cheated" mark from inventory items.
 
-- **Remove the Cheater flag** (`m_usedCheats`) — re-enables achievements for a
-  character that was marked by using console commands (`devcommands`).
-- **Edit skills** — level (0–100) and experience, add or remove skills.
-- **Edit base stats** — health, stamina, eitr, time since death, guardian power
-  cooldown.
-- Works directly on the save file, **keeps a backup** (`.bak`) and **recomputes
-  the SHA-512 checksum**, so the game loads the file normally.
+Windows only. Portable single exe — download it from the Releases page.
 
-![Status](https://img.shields.io/badge/platform-Windows-informational)
+## What it edits
 
-## Download
+- Cheater flag (m_usedCheats)
+- Skills — level and experience, add or remove
+- Stats — health, stamina, eitr, time since death, guardian power cooldown
+- Inventory — clears the cheated marks the game puts on spawned items
 
-Get the latest **`ValheimCharacterEditor.exe`** from the
-[Releases](../../releases) page — a single portable file, no installation needed.
+Every save keeps a backup (.bak) and fixes the SHA-512 checksum so the game
+still opens the file.
 
-Windows SmartScreen will warn that the exe is unsigned: click
-**More info → Run anyway**.
+## Character files
 
-## Where are the character files?
+    %USERPROFILE%\AppData\LocalLow\IronGate\Valheim\characters
 
-```
-%USERPROFILE%\AppData\LocalLow\IronGate\Valheim\characters
-```
+One .fch per character. Close the game before editing — it rewrites the save on
+exit and will throw away your changes.
 
-Each character is a `.fch` file. Drag & drop it onto the app window, or use
-**Open .fch…**.
+## Achievements
 
-## How to use
+The game blocks achievements if any of these is true:
 
-1. Open the app and load your character file.
-2. **Characters** tab — untick the **Cheater** flag if you want to remove it.
-3. **Characteristics** tab — edit stats (empty fields stay unchanged).
-4. **Skills** tab — adjust level/experience, add or remove skills.
-5. Click **Save** — a backup (`<name>.fch.bak`) is created automatically.
+    m_usedCheats  OR  the world has cheated modifiers  OR
+    a cheated item is in the inventory  OR  the game is modded
 
-> Make sure the game is **closed** while editing, or it may overwrite your
-> changes when you quit.
+This tool fixes the character side: the flag, and cheated marks on items in the
+inventory. It can't clean a cheated world or un-mod the game.
 
-## Achievements still disabled?
+One catch: the game re-marks an item whose total damage is over 10000 when it
+loads the character. Clearing those won't stick.
 
-The game blocks achievements when **any** of these is true:
+## Build from source
 
-```
-m_usedCheats  OR  the world has cheated modifiers  OR
-a cheated/spawned item is in the inventory  OR  the game is modded (BepInEx)
-```
+    python app_gui.py
 
-This tool clears the *character* flag. A cheated world, cheated inventory items
-or mods will keep achievements disabled regardless — this tool cannot fix those.
-
-## Building from source
-
-Requires Python 3.
-
-```sh
-# run from source
-python app_gui.py
-
-# build the exe
-pip install pyinstaller
-pyinstaller --onefile --windowed --name ValheimCharacterEditor app_gui.py
-```
-
-## Disclaimer
-
-Use it on your **own single-player characters** (or private servers where
-everyone agrees). Editing saves is at your own risk. The tool only edits the
-character `.fch` file and never touches world files.
+    pyinstaller --onefile --windowed --name ValheimCharacterEditor app_gui.py
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT.
