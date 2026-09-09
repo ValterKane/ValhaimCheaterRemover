@@ -1,0 +1,7 @@
+__pycache__/
+build/
+dist/
+*.spec
+*.fch
+*.fch.bak*
+_shot_*.png
