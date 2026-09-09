@@ -1,25 +1,9 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""Valheim Character Editor (.fch v46).
-
-Read/edit a Valheim 1.0 character file (PlayerProfile format v46):
-- clear the Cheater flag (m_usedCheats),
-- base stats from the embedded Player.Save (health/stamina/eitr/...),
-- skills (level + experience), add/remove skills.
-
-File layout:  [i32 size][ZPackage profile body][i32 64][SHA-512 of body].
-Structures mirror the decompiled game code (assembly_valheim.dll):
-PlayerProfile.SavePlayerToDisk / Player.Save / Inventory.Save / ItemData.Save.
-
-Console:  python valheim_character_editor.py <file.fch> [--dump | --selftest]
-GUI:      run without arguments (or drag & drop a file onto the program/exe).
-"""
 import struct, hashlib, sys, os, shutil, datetime
 
 PROFILE_VERSION = 46
 PLAYERDATA_VERSION = 33
 
-# skill type -> display name
 SKILLS = {
     1: "Swords", 2: "Knives", 3: "Clubs", 4: "Polearms", 5: "Spears",
     6: "Blocking", 7: "Axes", 8: "Bows", 9: "ElementalMagic",
@@ -30,7 +14,6 @@ SKILLS = {
 }
 
 BASE_FIELDS = [
-    # (key, label)
     ("maxHealth", "Max health"),
     ("health", "Current health"),
     ("maxStamina", "Max stamina"),
@@ -46,9 +29,7 @@ class ParseError(Exception):
     pass
 
 
-# ---------------------------------------------------------------- reading
 def _varint(b, o):
-    """7-bit string length prefix, as written by BinaryWriter.Write(string)."""
     shift = 0
     val = 0
     while True:
@@ -71,7 +52,6 @@ def read_str(b, o):
 
 
 class Reader:
-    """Sequential reader over a ZPackage-like stream."""
     def __init__(self, b):
         self.b = b; self.o = 0
     def i32(self): return self._unpack("<i", 4)
@@ -89,41 +69,34 @@ class Reader:
     def _skip_str(self):
         s, self.o = read_str(self.b, self.o)
         return s, self.o
-
-    # compound types
     def skip_vec3(self): self.o += 12
     def skip_item(self):
-        """ItemData.Load (format >= Version.Item.Smaller, currently 109)."""
-        self.i32()          # durability*100
-        self.byte(); self.byte(); self.byte()   # gridPos.x/y, worldLevel
+        self.i32()
+        self.byte(); self.byte(); self.byte()
         flags = self.byte()
-        if flags & 4: self.u16()        # quality
-        if flags & 8: self.u16()        # stack
-        if flags & 0x10: self.i32()     # variant
-        if flags & 0x20: self.i64(); self.s()   # crafterID + name
-        if flags & 0x40: self.i32()     # prefab hash
-        if flags & 0x80:                # custom data (count in 1-2 bytes)
+        if flags & 4: self.u16()
+        if flags & 8: self.u16()
+        if flags & 0x10: self.i32()
+        if flags & 0x20: self.i64(); self.s()
+        if flags & 0x40: self.i32()
+        if flags & 0x80:
             cnt = self.byte()
             if cnt & 0x80:
                 cnt = ((cnt & 0x7F) << 8) | self.byte()
             for _ in range(cnt):
                 self.s(); self.s()
-        self.byte()          # item cheated flags
+        off = self.o
+        cheated = self.byte()
+        return off, cheated
 
 
 def skip_float_dict(r):
-    """[i32 count] * (string, f32)"""
     cnt = r.i32()
     for _ in range(cnt):
         r.s(); r.f32()
 
 
-# ---------------------------------------------------------------- profile
 def parse_profile(body):
-    """Parse the profile body (v46). Returns a dict of offsets and fields.
-
-    Stops after the m_playerData blob (the last field of the body).
-    """
     r = Reader(body)
     ver = r.i32(); nstats = r.i32(); nbuckets = r.i32()
     if ver != PROFILE_VERSION:
@@ -133,35 +106,35 @@ def parse_profile(body):
         raise ParseError("unexpected parameters (stats=%d, buckets=%d)" % (nstats, nbuckets))
     for _ in range(nbuckets):
         r.o += 4 * nstats
-        skip_float_dict(r)          # m_knownWorlds
-        skip_float_dict(r)          # m_knownWorldKeys
-        skip_float_dict(r)          # m_knownCommands
-        sub = r.i32()               # 5 x m_enemyStats
+        skip_float_dict(r)
+        skip_float_dict(r)
+        skip_float_dict(r)
+        sub = r.i32()
         for _ in range(sub):
             skip_float_dict(r)
-        skip_float_dict(r)          # m_itemPickupStats
-        skip_float_dict(r)          # m_itemCraftStats
-        skip_float_dict(r)          # m_pickableStats
-        skip_float_dict(r)          # m_foodEatenStats
-        skip_float_dict(r)          # m_piecesPlacedStats
+        skip_float_dict(r)
+        skip_float_dict(r)
+        skip_float_dict(r)
+        skip_float_dict(r)
+        skip_float_dict(r)
     first_spawn = r.byte()
     nworlds = r.i32()
-    for _ in range(nworlds):        # m_worldData
-        r.i64()                     # uid
-        r.byte(); r.skip_vec3()     # custom spawn
-        r.byte(); r.skip_vec3()     # logout
-        r.byte(); r.skip_vec3()     # death
-        r.skip_vec3()               # home
-        if r.byte():                # mapData
+    for _ in range(nworlds):
+        r.i64()
+        r.byte(); r.skip_vec3()
+        r.byte(); r.skip_vec3()
+        r.byte(); r.skip_vec3()
+        r.skip_vec3()
+        if r.byte():
             ln = r.i32(); r.o += ln
     name, _ = r._skip_str()
     player_id = r.i64()
     seed, _ = r._skip_str()
 
-    flag_off = r.o                 # m_usedCheats (bool)
+    flag_off = r.o
     used_cheats = r.byte()
     date_created = datetime.datetime.fromtimestamp(
-        r.i64(), datetime.timezone.utc).date()  # UnixTimeSeconds
+        r.i64(), datetime.timezone.utc).date()
 
     has_data = r.byte()
     blob_len_off = blob_off = blob_len = None
@@ -181,12 +154,7 @@ def parse_profile(body):
     }
 
 
-# ------------------------------------------------------- Player.Save blob
 def parse_blob(blob):
-    """Parse the embedded Player.Save (v33) in Player.Save() order.
-
-    Returns: base - f32 field offsets, skills - description of the skills block.
-    """
     r = Reader(blob)
     pd = r.i32()
     if pd != PLAYERDATA_VERSION:
@@ -202,25 +170,25 @@ def parse_blob(blob):
     guardian_power, _ = r._skip_str()
     off = r.o; base["guardianPowerCooldown"] = off; r.f32()
 
-    # inventory: i32 version, u16 count, then items
     r.i32()
     n = r.u16()
+    item_cheats = []
     for _ in range(n):
-        r.skip_item()
+        off, cheated = r.skip_item()
+        item_cheats.append((off, bool(cheated & 1)))
 
-    # known recipes/stations/materials/tutorials/uniques/trophies/biomes/texts
-    for _ in range(r.i32()): r.s()                       # knownRecipes
-    for _ in range(r.i32()): r.s(); r.i32()              # knownStations
-    for _ in range(r.i32()): r.s()                       # knownMaterial
-    for _ in range(r.i32()): r.s()                       # shownTutorials
-    for _ in range(r.i32()): r.s()                       # m_uniques
-    for _ in range(r.i32()): r.s()                       # m_trophies
-    for _ in range(r.i32()): r.s()                       # knownBiome
-    for _ in range(r.i32()): r.s(); r.s()                # knownTexts
-    r.s(); r.s()                                         # beard, hair
-    r.skip_vec3(); r.skip_vec3()                         # skin and hair color
-    r.i32()                                              # modelIndex
-    for _ in range(r.i32()): r.s(); r.f32()              # food: name + time
+    for _ in range(r.i32()): r.s()
+    for _ in range(r.i32()): r.s(); r.i32()
+    for _ in range(r.i32()): r.s()
+    for _ in range(r.i32()): r.s()
+    for _ in range(r.i32()): r.s()
+    for _ in range(r.i32()): r.s()
+    for _ in range(r.i32()): r.s()
+    for _ in range(r.i32()): r.s(); r.s()
+    r.s(); r.s()
+    r.skip_vec3(); r.skip_vec3()
+    r.i32()
+    for _ in range(r.i32()): r.s(); r.f32()
 
     sk_ver_off = r.o
     sk_ver = r.i32()
@@ -238,12 +206,11 @@ def parse_blob(blob):
                        "level_off": lvl_off, "acc_off": acc_off})
     sk_end_off = r.o
 
-    # customData + stamina/eitr + build panel binary
     for _ in range(r.i32()): r.s(); r.s()
     off = r.o; base["stamina"] = off; r.f32()
     off = r.o; base["maxEitr"] = off; r.f32()
     off = r.o; base["eitr"] = off; r.f32()
-    ln = r.i32(); r.o += ln                              # m_buildUi
+    ln = r.i32(); r.o += ln
     if r.o != len(blob):
         raise ParseError("player data end mismatch (%d of %d)" % (r.o, len(blob)))
 
@@ -251,14 +218,13 @@ def parse_blob(blob):
         "base": base,
         "skills": skills,
         "guardian_power": guardian_power,
+        "item_cheats": item_cheats,
         "sk_ver_off": sk_ver_off, "sk_count_off": sk_count_off,
         "sk_entries_off": sk_entries_off, "sk_end_off": sk_end_off,
     }
 
 
-# ------------------------------------------------------------- opening
 class Character:
-    """An opened .fch: original bytes + parsed structure."""
     def __init__(self, path):
         self.path = os.path.abspath(path)
         with open(self.path, "rb") as f:
@@ -282,18 +248,11 @@ class Character:
         return self.player["skills"] if self.player else []
 
 
-# ------------------------------------------------------------- writing
 def pack_f32(v):
     return struct.pack("<f", v)
 
 
-def write_character(ch, skills_levels, base_values, used_cheats):
-    """Assemble a new .fch from the model. Returns a bytearray of the file.
-
-    skills_levels: {skill_type: (level, exp)} - the target set of skills.
-    base_values:   {key: float} - base field edits (by offsets from ch).
-    used_cheats:   target value of the flag.
-    """
+def write_character(ch, skills_levels, base_values, used_cheats, clear_item_cheats=False):
     body = bytearray(ch.body)
     body[ch.profile["flag_off"]] = 1 if used_cheats else 0
 
@@ -304,12 +263,15 @@ def write_character(ch, skills_levels, base_values, used_cheats):
     else:
         blob = bytearray(body[ch.profile["blob_off"]:
                               ch.profile["blob_off"] + ch.profile["blob_len"]])
-        b_off = ch.profile["blob_off"]
         for key, val in base_values.items():
             off = ch.player["base"].get(key)
             if off is None:
                 raise ParseError("internal error: no field %s" % key)
             blob[off:off + 4] = pack_f32(val)
+
+        if clear_item_cheats:
+            for off, _ in ch.player["item_cheats"]:
+                blob[off] &= ~1
 
         old = ch.player["skills"]
         old_map = {s["type"]: s for s in old}
@@ -330,8 +292,8 @@ def write_character(ch, skills_levels, base_values, used_cheats):
             struct.pack("<i", 64) + hashlib.sha512(new_body).digest())
 
 
-def save_character(ch, target_path, skills_levels, base_values, used_cheats):
-    """Write with a backup kept next to the file (never overwrites a .bak)."""
+def save_character(ch, target_path, skills_levels, base_values, used_cheats,
+                   clear_item_cheats=False):
     if os.path.exists(target_path):
         bak = target_path + ".bak"
         n = 2
@@ -342,13 +304,13 @@ def save_character(ch, target_path, skills_levels, base_values, used_cheats):
         backup_note = os.path.basename(bak)
     else:
         backup_note = None
-    data = write_character(ch, skills_levels, base_values, used_cheats)
+    data = write_character(ch, skills_levels, base_values, used_cheats,
+                           clear_item_cheats)
     with open(target_path, "wb") as f:
         f.write(data)
     return backup_note
 
 
-# ------------------------------------------------------------- console
 def _fmt_skill(s):
     name = SKILLS.get(s["type"], "Skill %d" % s["type"])
     return "%s: level %.0f, exp %.3f" % (name, s["level"], s["acc"])
@@ -380,7 +342,6 @@ def dump(ch):
 
 
 def selftest(ch, tmp):
-    """Check: rebuilding without edits yields a byte-identical file."""
     src = bytes(ch.raw)
     p = ch.profile
     skills_levels = {s["type"]: (s["level"], s["acc"]) for s in ch.skills}
