@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""GUI frontend for the Valheim Character Editor (tkinter).
-
-Run:        python app_gui.py [character.fch]
-Drag&drop:  drop a .fch onto the program/exe shortcut.
-"""
-import os, sys, traceback, datetime, tkinter as tk
+import os, sys, traceback, datetime, struct, tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from valheim_character_editor import (
@@ -36,11 +30,12 @@ class EditorApp:
         root.geometry("720x520")
         root.minsize(560, 420)
 
-        self.ch = None            # opened Character
-        self.base_vars = {}       # key -> StringVar
-        self.skill_rows = {}      # skill type -> {"level": var, "acc": var, "frame": ...}
+        self.ch = None
+        self.base_vars = {}
+        self.skill_rows = {}
         self.skill_names = dict(SKILLS)
         self.cheat_var = tk.BooleanVar(value=False)
+        self.cheat_items_var = tk.BooleanVar(value=False)
 
         self._build_toolbar()
         self._build_notebook()
@@ -48,13 +43,11 @@ class EditorApp:
         ttk.Label(root, textvariable=self.status, relief="sunken",
                   anchor="w").pack(fill="x", side="bottom")
 
-        # open a file passed on the command line (drag&drop onto the exe)
         for a in sys.argv[1:]:
             if a.lower().endswith(".fch") and os.path.exists(a):
                 self.open_file(a)
                 break
 
-    # ------------------------------------------------------------ UI shell
     def _build_toolbar(self):
         bar = ttk.Frame(self.root)
         bar.pack(fill="x", **PAD)
@@ -86,15 +79,19 @@ class EditorApp:
             f, text="Marked as cheater (m_usedCheats) — untick to re-enable achievements",
             variable=self.cheat_var)
         self.cheat_check.pack(anchor="w", **PAD)
-        note = ("Achievements in Valheim are not only blocked by the character flag: "
-                "cheated world modifiers (setkey), spawned/cheated inventory items "
-                "and mods (BepInEx) can also disable them. "
-                "The flag in the file is just one of the causes.")
+        note = ("Achievements can also be blocked by cheated world modifiers "
+                "(setkey), cheated inventory items and mods (BepInEx).")
         ttk.Label(f, text=note, wraplength=640, foreground="#555").pack(anchor="w", **PAD)
+
+        self.items_note = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.items_note, foreground="#a55").pack(anchor="w", **PAD)
+        self.cheat_items_check = ttk.Checkbutton(
+            f, text="Clear cheater marks on inventory items",
+            variable=self.cheat_items_var)
+        self.cheat_items_check.pack(anchor="w", **PAD)
 
     def _build_tab_base(self):
         f = self.tab_base
-        self.base_rows = {}
         self.base_disabled_note = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.base_disabled_note, foreground="#a55").pack(anchor="w", **PAD)
         grid = ttk.Frame(f)
@@ -125,7 +122,6 @@ class EditorApp:
         ttk.Label(f, text="Level: 0–100. Experience is progress toward the next level.",
                   foreground="#555").pack(side="bottom", anchor="w", **PAD)
 
-        # tab body: a canvas holding the list fills the remaining space
         body = ttk.Frame(f)
         body.pack(fill="both", expand=True, **PAD)
         canvas = tk.Canvas(body, highlightthickness=0, background="#ffffff")
@@ -141,7 +137,6 @@ class EditorApp:
                              lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", self._on_canvas_resize)
 
-        # column headers
         hdr = ttk.Frame(self.skills_box)
         hdr.pack(fill="x", padx=4, pady=(2, 0))
         for col, txt, w in (("Skill", "Skill", 26), ("level", "Level", 10),
@@ -149,10 +144,8 @@ class EditorApp:
             ttk.Label(hdr, text=txt, width=w, font=("TkDefaultFont", 9, "bold")).pack(side="left")
 
     def _on_canvas_resize(self, e):
-        """Stretch the contents to the canvas width so nothing gets clipped."""
         self.skills_canvas.itemconfigure(self._skills_win, width=e.width)
 
-    # ------------------------------------------------------------ loading
     def ask_open(self):
         path = filedialog.askopenfilename(
             title="Select a Valheim character file (.fch)",
@@ -181,14 +174,15 @@ class EditorApp:
             % (p["name"], p["player_id"], p["seed"] or "(none)",
                p["date_created"], cheater))
         self.cheat_var.set(bool(p["used_cheats"]))
+        self.cheat_items_var.set(False)
 
-        # stats
         for key in self.base_vars:
             self.base_vars[key].set("")
         if ch.player is None:
             self.base_disabled_note.set(
                 "No embedded player data (the character has not entered a world yet) — "
                 "stats and skills are unavailable.")
+            self.items_note.set("")
             for key in self.base_vars:
                 self.base_vars[key].set("")
             for e in self._walk_entries():
@@ -196,7 +190,6 @@ class EditorApp:
         else:
             self.base_disabled_note.set("")
             blob = ch.body[p["blob_off"]:p["blob_off"] + p["blob_len"]]
-            import struct
             for key, var in self.base_vars.items():
                 off = ch.player["base"].get(key)
                 if off is not None:
@@ -204,6 +197,13 @@ class EditorApp:
                     var.set(("%.3f" % val).rstrip("0").rstrip("."))
             for e in self._walk_entries():
                 e.state(["!disabled"])
+            cheated = sum(1 for _, c in ch.player["item_cheats"] if c)
+            total = len(ch.player["item_cheats"])
+            if cheated:
+                self.items_note.set("Inventory: %d of %d items marked as cheated"
+                                    % (cheated, total))
+            else:
+                self.items_note.set("Inventory: no cheater-marked items (%d items)" % total)
 
         self._rebuild_skill_rows()
 
@@ -216,7 +216,6 @@ class EditorApp:
                         seen.add(id(sub))
                         yield sub
 
-    # ------------------------------------------------------------ skills
     def _rebuild_skill_rows(self):
         for row in self.skill_rows.values():
             row["frame"].destroy()
@@ -269,13 +268,12 @@ class EditorApp:
         self.skills_canvas.configure(scrollregion=self.skills_canvas.bbox("all"))
         self._refresh_add_combo()
 
-    # ------------------------------------------------------------ saving
     def _parse_float(self, text, what):
         try:
             v = float(text.replace(",", "."))
         except ValueError:
             raise ValueError("\"%s\" is not a number (\"%s\")" % (what, text))
-        if v != v or v in (float("inf"), float("-inf")):  # NaN / infinity
+        if v != v or v in (float("inf"), float("-inf")):
             raise ValueError("\"%s\" is not a number" % what)
         return v
 
@@ -297,6 +295,7 @@ class EditorApp:
                 if txt:
                     base_values[key] = self._parse_float(txt, dict(BASE_FIELDS)[key])
             used_cheats = bool(self.cheat_var.get())
+            clear_item_cheats = bool(self.cheat_items_var.get())
         except ValueError as e:
             _err(str(e))
             return
@@ -304,7 +303,7 @@ class EditorApp:
         target = self.ch.path
         try:
             backup = save_character(self.ch, target, skills_levels,
-                                    base_values, used_cheats)
+                                    base_values, used_cheats, clear_item_cheats)
         except (ParseError, OSError, ValueError) as e:
             _err("Failed to save: %s" % e)
             return
@@ -317,7 +316,6 @@ class EditorApp:
             msg += ("\n\nNote: the Cheater flag is still set — "
                     "achievements are disabled for this character.")
         messagebox.showinfo("Done", msg)
-        # reload the file so the model matches what is on disk
         self.open_file(target)
 
 
