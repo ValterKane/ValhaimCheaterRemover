@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""GUI-оболочка Valheim Character Editor (tkinter).
+"""GUI frontend for the Valheim Character Editor (tkinter).
 
-Запуск: python app_gui.py [персонаж.fch]
-Drag&drop: перетащи .fch на программу/ярлык exe.
+Run:        python app_gui.py [character.fch]
+Drag&drop:  drop a .fch onto the program/exe shortcut.
 """
 import os, sys, traceback, datetime, tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -16,7 +16,7 @@ PAD = {"padx": 6, "pady": 3}
 
 
 def _err(msg):
-    messagebox.showerror("Ошибка", msg)
+    messagebox.showerror("Error", msg)
 
 
 def _log_exc(where):
@@ -36,30 +36,30 @@ class EditorApp:
         root.geometry("720x520")
         root.minsize(560, 420)
 
-        self.ch = None            # открытый Character
-        self.base_vars = {}       # ключ -> StringVar
-        self.skill_rows = {}      # тип скила -> {"level": var, "acc": var, "frame": ...}
-        self.skill_names = {t: "%s (%s)" % nm for t, nm in SKILLS.items()}
+        self.ch = None            # opened Character
+        self.base_vars = {}       # key -> StringVar
+        self.skill_rows = {}      # skill type -> {"level": var, "acc": var, "frame": ...}
+        self.skill_names = dict(SKILLS)
         self.cheat_var = tk.BooleanVar(value=False)
 
         self._build_toolbar()
         self._build_notebook()
-        self.status = tk.StringVar(value="Откройте файл персонажа (.fch)")
+        self.status = tk.StringVar(value="Open a character file (.fch)")
         ttk.Label(root, textvariable=self.status, relief="sunken",
                   anchor="w").pack(fill="x", side="bottom")
 
-        # открытие файла из аргументов командной строки (drag&drop на exe)
+        # open a file passed on the command line (drag&drop onto the exe)
         for a in sys.argv[1:]:
             if a.lower().endswith(".fch") and os.path.exists(a):
                 self.open_file(a)
                 break
 
-    # ------------------------------------------------------------ UI-каркас
+    # ------------------------------------------------------------ UI shell
     def _build_toolbar(self):
         bar = ttk.Frame(self.root)
         bar.pack(fill="x", **PAD)
-        ttk.Button(bar, text="Открыть .fch…", command=self.ask_open).pack(side="left")
-        ttk.Button(bar, text="Сохранить", command=self.save).pack(side="left", padx=(8, 0))
+        ttk.Button(bar, text="Open .fch…", command=self.ask_open).pack(side="left")
+        ttk.Button(bar, text="Save", command=self.save).pack(side="left", padx=(8, 0))
         self.file_label = ttk.Label(bar, text="")
         self.file_label.pack(side="left", padx=12)
 
@@ -70,9 +70,9 @@ class EditorApp:
         self.tab_char = ttk.Frame(nb)
         self.tab_base = ttk.Frame(nb)
         self.tab_skills = ttk.Frame(nb)
-        nb.add(self.tab_char, text="Персонаж")
-        nb.add(self.tab_base, text="Характеристики")
-        nb.add(self.tab_skills, text="Скилы")
+        nb.add(self.tab_char, text="Character")
+        nb.add(self.tab_base, text="Stats")
+        nb.add(self.tab_skills, text="Skills")
 
         self._build_tab_char()
         self._build_tab_base()
@@ -83,13 +83,13 @@ class EditorApp:
         self.info_text = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.info_text, justify="left").pack(anchor="w", **PAD)
         self.cheat_check = ttk.Checkbutton(
-            f, text="Помечен читером (m_usedCheats) — снимите, чтобы включить достижения",
+            f, text="Marked as cheater (m_usedCheats) — untick to re-enable achievements",
             variable=self.cheat_var)
         self.cheat_check.pack(anchor="w", **PAD)
-        note = ("Достижения в Valheim отключаются не только меткой персонажа: "
-                "заблокировать их могут читерные модификаторы мира (setkey), "
-                "заспавненные/читерные предметы в инвентаре и моды (BepInEx). "
-                "Метка в файле — лишь одна из причин.")
+        note = ("Achievements in Valheim are not only blocked by the character flag: "
+                "cheated world modifiers (setkey), spawned/cheated inventory items "
+                "and mods (BepInEx) can also disable them. "
+                "The flag in the file is just one of the causes.")
         ttk.Label(f, text=note, wraplength=640, foreground="#555").pack(anchor="w", **PAD)
 
     def _build_tab_base(self):
@@ -107,8 +107,9 @@ class EditorApp:
             ent = ttk.Entry(grid, textvariable=var, width=10)
             ent.grid(row=r, column=c * 2 + 1, sticky="w", padx=4, pady=2)
             self.base_vars[key] = var
-        ttk.Label(f, text=("Максимальный вес, скорость и часть других чисел в файле "
-                           "не хранятся — они вычисляются игрой из экипировки и эффектов."),
+        ttk.Label(f, text=("Maximum carry weight, speed and some other values are "
+                           "not stored in the file — the game computes them from "
+                           "equipment and effects."),
                   foreground="#555", wraplength=640).pack(anchor="w", **PAD)
 
     def _build_tab_skills(self):
@@ -116,15 +117,15 @@ class EditorApp:
 
         top = ttk.Frame(f)
         top.pack(fill="x", **PAD)
-        ttk.Label(top, text="Добавить скил:").pack(side="left")
+        ttk.Label(top, text="Add skill:").pack(side="left")
         self.add_combo = ttk.Combobox(top, state="readonly", width=28)
         self.add_combo.pack(side="left", padx=4)
-        ttk.Button(top, text="Добавить", command=self.add_skill).pack(side="left")
+        ttk.Button(top, text="Add", command=self.add_skill).pack(side="left")
 
-        ttk.Label(f, text="Уровень: 0–100. Опыт — накопление к следующему уровню.",
+        ttk.Label(f, text="Level: 0–100. Experience is progress toward the next level.",
                   foreground="#555").pack(side="bottom", anchor="w", **PAD)
 
-        # тело вкладки: холст со списком занимает всю оставшуюся площадь
+        # tab body: a canvas holding the list fills the remaining space
         body = ttk.Frame(f)
         body.pack(fill="both", expand=True, **PAD)
         canvas = tk.Canvas(body, highlightthickness=0, background="#ffffff")
@@ -140,22 +141,22 @@ class EditorApp:
                              lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", self._on_canvas_resize)
 
-        # заголовки
+        # column headers
         hdr = ttk.Frame(self.skills_box)
         hdr.pack(fill="x", padx=4, pady=(2, 0))
-        for col, txt, w in (("Скил", "Скил", 26), ("level", "Уровень", 10),
-                            ("acc", "Опыт (до след. уровня)", 20)):
+        for col, txt, w in (("Skill", "Skill", 26), ("level", "Level", 10),
+                            ("acc", "Experience (to next level)", 20)):
             ttk.Label(hdr, text=txt, width=w, font=("TkDefaultFont", 9, "bold")).pack(side="left")
 
     def _on_canvas_resize(self, e):
-        """Растягиваем содержимое по ширине холста, чтобы ничего не обрезалось."""
+        """Stretch the contents to the canvas width so nothing gets clipped."""
         self.skills_canvas.itemconfigure(self._skills_win, width=e.width)
 
-    # ------------------------------------------------------------ загрузка
+    # ------------------------------------------------------------ loading
     def ask_open(self):
         path = filedialog.askopenfilename(
-            title="Выберите файл персонажа Valheim (.fch)",
-            filetypes=[("Персонаж Valheim", "*.fch"), ("Все файлы", "*.*")])
+            title="Select a Valheim character file (.fch)",
+            filetypes=[("Valheim character", "*.fch"), ("All files", "*.*")])
         if path:
             self.open_file(path)
 
@@ -168,26 +169,26 @@ class EditorApp:
             return
         self.ch = ch
         self.file_label.config(text=os.path.basename(path))
-        self.status.set("Загружен: %s" % path)
+        self.status.set("Loaded: %s" % path)
         self._populate()
 
     def _populate(self):
         ch = self.ch
         p = ch.profile
-        cheater = "да" if p["used_cheats"] else "нет"
+        cheater = "yes" if p["used_cheats"] else "no"
         self.info_text.set(
-            "Имя: %s\nID: %d    Seed: %s\nСоздан: %s\nМетка Cheater: %s"
-            % (p["name"], p["player_id"], p["seed"] or "(нет)",
+            "Name: %s\nID: %d    Seed: %s\nCreated: %s\nCheater flag: %s"
+            % (p["name"], p["player_id"], p["seed"] or "(none)",
                p["date_created"], cheater))
         self.cheat_var.set(bool(p["used_cheats"]))
 
-        # характеристики
+        # stats
         for key in self.base_vars:
             self.base_vars[key].set("")
         if ch.player is None:
             self.base_disabled_note.set(
-                "Встроенные данные игрока отсутствуют (персонаж ещё не входил в мир) — "
-                "характеристики и скилы недоступны.")
+                "No embedded player data (the character has not entered a world yet) — "
+                "stats and skills are unavailable.")
             for key in self.base_vars:
                 self.base_vars[key].set("")
             for e in self._walk_entries():
@@ -215,7 +216,7 @@ class EditorApp:
                         seen.add(id(sub))
                         yield sub
 
-    # ------------------------------------------------------------ скилы
+    # ------------------------------------------------------------ skills
     def _rebuild_skill_rows(self):
         for row in self.skill_rows.values():
             row["frame"].destroy()
@@ -225,8 +226,7 @@ class EditorApp:
         self._refresh_add_combo()
 
     def _add_row(self, stype, level, acc):
-        ru, en = SKILLS.get(stype, ("Скил %d" % stype, str(stype)))
-        name = "%s (%s)" % (ru, en)
+        name = SKILLS.get(stype, "Skill %d" % stype)
         frame = ttk.Frame(self.skills_box)
         frame.pack(fill="x", padx=4, pady=1)
         ttk.Label(frame, text=name, width=26, anchor="w").pack(side="left")
@@ -234,7 +234,7 @@ class EditorApp:
         accv = tk.StringVar(value=self._fmt(acc))
         ttk.Entry(frame, textvariable=lvl, width=10).pack(side="left", padx=4)
         ttk.Entry(frame, textvariable=accv, width=18).pack(side="left", padx=4)
-        ttk.Button(frame, text="Удалить",
+        ttk.Button(frame, text="Remove",
                    command=lambda t=stype: self.del_skill(t)).pack(side="left", padx=6)
         self.skill_rows[stype] = {"frame": frame, "level": lvl, "acc": accv,
                                   "name": name}
@@ -269,25 +269,25 @@ class EditorApp:
         self.skills_canvas.configure(scrollregion=self.skills_canvas.bbox("all"))
         self._refresh_add_combo()
 
-    # ------------------------------------------------------------ сохранение
+    # ------------------------------------------------------------ saving
     def _parse_float(self, text, what):
         try:
             v = float(text.replace(",", "."))
         except ValueError:
-            raise ValueError("«%s»: не число («%s»)" % (what, text))
-        if v != v or v in (float("inf"), float("-inf")):  # NaN / бесконечность
-            raise ValueError("«%s»: не число" % what)
+            raise ValueError("\"%s\" is not a number (\"%s\")" % (what, text))
+        if v != v or v in (float("inf"), float("-inf")):  # NaN / infinity
+            raise ValueError("\"%s\" is not a number" % what)
         return v
 
     def save(self):
         if self.ch is None:
-            _err("Сначала откройте файл персонажа.")
+            _err("Open a character file first.")
             return
         try:
             skills_levels = {}
             for stype, row in self.skill_rows.items():
-                lvl = self._parse_float(row["level"].get(), "уровень %s" % row["name"])
-                acc = self._parse_float(row["acc"].get(), "опыт %s" % row["name"])
+                lvl = self._parse_float(row["level"].get(), "level of %s" % row["name"])
+                acc = self._parse_float(row["acc"].get(), "experience of %s" % row["name"])
                 lvl = max(0.0, min(100.0, lvl))
                 acc = max(0.0, acc)
                 skills_levels[stype] = (lvl, acc)
@@ -306,18 +306,18 @@ class EditorApp:
             backup = save_character(self.ch, target, skills_levels,
                                     base_values, used_cheats)
         except (ParseError, OSError, ValueError) as e:
-            _err("Не удалось сохранить: %s" % e)
+            _err("Failed to save: %s" % e)
             return
 
-        msg = "Сохранено: %s" % os.path.basename(target)
+        msg = "Saved: %s" % os.path.basename(target)
         if backup:
-            msg += "\nРезервная копия: %s" % backup
-        msg += "\nКонтрольная сумма обновлена."
+            msg += "\nBackup: %s" % backup
+        msg += "\nChecksum updated."
         if used_cheats:
-            msg += ("\n\nВнимание: метка Cheater осталась включена — "
-                    "достижения для персонажа отключены.")
-        messagebox.showinfo("Готово", msg)
-        # перечитать файл, чтобы модель соответствовала диску
+            msg += ("\n\nNote: the Cheater flag is still set — "
+                    "achievements are disabled for this character.")
+        messagebox.showinfo("Done", msg)
+        # reload the file so the model matches what is on disk
         self.open_file(target)
 
 
@@ -326,7 +326,7 @@ def run_gui():
         root = tk.Tk()
     except Exception as e:
         _log_exc("tk init")
-        sys.stderr.write("GUI недоступен: %s\n" % e)
+        sys.stderr.write("GUI unavailable: %s\n" % e)
         sys.exit(2)
     try:
         EditorApp(root)
@@ -334,7 +334,7 @@ def run_gui():
     except Exception as e:
         _log_exc("mainloop")
         try:
-            messagebox.showerror("Ошибка", "Что-то пошло не так:\n%s" % e)
+            messagebox.showerror("Error", "Something went wrong:\n%s" % e)
         except Exception:
             pass
         raise
