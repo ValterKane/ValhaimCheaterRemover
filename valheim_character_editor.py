@@ -96,6 +96,34 @@ def skip_float_dict(r):
         r.s(); r.f32()
 
 
+def _read_num_items(r):
+    b = r.byte()
+    return ((b & 0x7F) << 8) | r.byte() if b & 0x80 else b
+
+
+def read_item(r):
+    dur = r.i32()
+    x = r.byte(); y = r.byte(); wl = r.byte()
+    flags = r.byte()
+    quality = r.u16() if flags & 4 else 1
+    stack = r.u16() if flags & 8 else 1
+    if flags & 0x10:
+        r.i32()
+    if flags & 0x20:
+        r.i64(); r.s()
+    phash = r.i32() if flags & 0x40 else 0
+    if flags & 0x80:
+        for _ in range(_read_num_items(r)):
+            r.s(); r.s()
+    cheated_off = r.o
+    cheated = r.byte() & 1
+    return {
+        "hash": phash, "x": x, "y": y, "world_level": wl,
+        "quality": quality, "stack": stack, "durability": dur,
+        "cheated": bool(cheated), "cheated_off": cheated_off,
+    }
+
+
 def parse_profile(body):
     r = Reader(body)
     ver = r.i32(); nstats = r.i32(); nbuckets = r.i32()
@@ -171,11 +199,16 @@ def parse_blob(blob):
     off = r.o; base["guardianPowerCooldown"] = off; r.f32()
 
     r.i32()
+    inv_count_off = r.o
     n = r.u16()
-    item_cheats = []
+    items = []
     for _ in range(n):
-        off, cheated = r.skip_item()
-        item_cheats.append((off, bool(cheated & 1)))
+        start = r.o
+        it = read_item(r)
+        it["raw"] = bytes(blob[start:r.o])
+        items.append(it)
+    inv_items_end = r.o
+    item_cheats = [(it["cheated_off"], it["cheated"]) for it in items]
 
     for _ in range(r.i32()): r.s()
     for _ in range(r.i32()): r.s(); r.i32()
@@ -219,6 +252,8 @@ def parse_blob(blob):
         "skills": skills,
         "guardian_power": guardian_power,
         "item_cheats": item_cheats,
+        "inventory": items,
+        "inv_count_off": inv_count_off, "inv_items_end": inv_items_end,
         "sk_ver_off": sk_ver_off, "sk_count_off": sk_count_off,
         "sk_entries_off": sk_entries_off, "sk_end_off": sk_end_off,
     }
@@ -252,12 +287,39 @@ def pack_f32(v):
     return struct.pack("<f", v)
 
 
-def write_character(ch, skills_levels, base_values, used_cheats, clear_item_cheats=False):
+def _write_item(it):
+    b = bytearray()
+    b += struct.pack("<i", int(it["durability"]))
+    flags = 0x40
+    if it["quality"] != 1:
+        flags |= 4
+    if it["stack"] != 1:
+        flags |= 8
+    b += bytes([it["x"], it["y"], it.get("world_level", 0), flags])
+    if it["quality"] != 1:
+        b += struct.pack("<H", it["quality"])
+    if it["stack"] != 1:
+        b += struct.pack("<H", it["stack"])
+    b += struct.pack("<i", it["hash"])
+    b += bytes([1 if it.get("cheated") else 0])
+    return bytes(b)
+
+
+def _item_bytes(it):
+    if "raw" in it:
+        b = bytearray(it["raw"])
+        b[-1] = 1 if it.get("cheated") else 0
+        return bytes(b)
+    return _write_item(it)
+
+
+def write_character(ch, skills_levels, base_values, used_cheats, clear_item_cheats=False,
+                    items=None):
     body = bytearray(ch.body)
     body[ch.profile["flag_off"]] = 1 if used_cheats else 0
 
     if ch.player is None:
-        if base_values or skills_levels:
+        if base_values or skills_levels or items:
             raise ParseError("this character has no embedded player data - nothing to edit")
         new_body = bytes(body)
     else:
@@ -269,7 +331,7 @@ def write_character(ch, skills_levels, base_values, used_cheats, clear_item_chea
                 raise ParseError("internal error: no field %s" % key)
             blob[off:off + 4] = pack_f32(val)
 
-        if clear_item_cheats:
+        if items is None and clear_item_cheats:
             for off, _ in ch.player["item_cheats"]:
                 blob[off] &= ~1
 
@@ -286,6 +348,14 @@ def write_character(ch, skills_levels, base_values, used_cheats, clear_item_chea
                 s = old_map[t]
                 blob[s["level_off"]:s["level_off"] + 4] = pack_f32(lvl)
                 blob[s["acc_off"]:s["acc_off"] + 4] = pack_f32(acc)
+
+        if items is not None:
+            if clear_item_cheats:
+                for it in items:
+                    it["cheated"] = False
+            seg = struct.pack("<H", len(items)) + b"".join(_item_bytes(it) for it in items)
+            blob[ch.player["inv_count_off"]:ch.player["inv_items_end"]] = seg
+
         new_body = (bytes(body[:ch.profile["blob_len_off"]]) +
                     struct.pack("<i", len(blob)) + bytes(blob))
     return (struct.pack("<i", len(new_body)) + new_body +
@@ -293,7 +363,7 @@ def write_character(ch, skills_levels, base_values, used_cheats, clear_item_chea
 
 
 def save_character(ch, target_path, skills_levels, base_values, used_cheats,
-                   clear_item_cheats=False):
+                   clear_item_cheats=False, items=None):
     if os.path.exists(target_path):
         bak = target_path + ".bak"
         n = 2
@@ -305,7 +375,7 @@ def save_character(ch, target_path, skills_levels, base_values, used_cheats,
     else:
         backup_note = None
     data = write_character(ch, skills_levels, base_values, used_cheats,
-                           clear_item_cheats)
+                           clear_item_cheats, items)
     with open(target_path, "wb") as f:
         f.write(data)
     return backup_note
