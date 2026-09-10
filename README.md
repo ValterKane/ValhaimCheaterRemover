@@ -1,7 +1,7 @@
 # Valheim Character Editor
 
-Edits your own Valheim character saves (.fch). Remove the cheater flag, tweak
-skills and stats, clear the "cheated" mark from inventory items.
+Edits your own Valheim character saves (.fch) and world settings. Remove the
+cheater flag, tweak skills and stats, edit the backpack, adjust world modifiers.
 
 Windows: portable single exe — grab it from the Releases page. It's plain
 Python + tkinter under the hood, so Linux and Steam Deck can run it from source
@@ -12,7 +12,10 @@ Python + tkinter under the hood, so Linux and Steam Deck can run it from source
 - Cheater flag (m_usedCheats)
 - Skills — level and experience, add or remove
 - Stats — health, stamina, eitr, time since death, guardian power cooldown
-- Inventory — clears the cheated marks the game puts on spawned items
+- Inventory — the 8×4 backpack grid. Add or replace an item by name or ID
+  (added items carry no cheater mark), unmark one cheater-flagged item or
+  clear every mark at once.
+- World — combat, death penalty, resources, raids and portals
 
 Every save keeps a backup (.bak) and fixes the SHA-512 checksum so the game
 still opens the file.
@@ -30,6 +33,10 @@ Linux:
 One .fch per character. Close the game before editing — it rewrites the save on
 exit and will throw away your changes.
 
+Some setups keep a second copy under `characters_local` (worlds under
+`worlds_local`). The **Local files** button scans both the normal and the
+`_local` folders and lists what it finds.
+
 ## Achievements
 
 The game blocks achievements if any of these is true:
@@ -40,9 +47,11 @@ The game blocks achievements if any of these is true:
 What this tool can and can't do about each:
 
 - m_usedCheats — untick the flag.
-- Cheated items — clears the mark, but only on items in the character's
-  inventory at the time you save. Items in chests or dropped in the world keep
-  their mark; picking one up later brings the cheat state back.
+- Cheated items — shown in red on the Inventory tab. Use **Unmark selected**
+  for one item or **Clear all cheater marks** for the whole backpack. Only
+  items in the inventory when you save are covered; items in chests or dropped
+  in the world keep their mark, and picking one up later brings the cheat state
+  back.
 - World modifiers (Hammer Mode, No Build Cost) — not a stored flag. The game
   checks them live, so there's nothing to fix: toggle them off before going for
   achievements.
