@@ -4,6 +4,10 @@ import struct, hashlib, sys, os, shutil, datetime
 PROFILE_VERSION = 46
 PLAYERDATA_VERSION = 33
 
+INV_COLS = 8
+INV_ROWS_MIN = 4
+INV_ROWS_MAX = 6
+
 SKILLS = {
     1: "Swords", 2: "Knives", 3: "Clubs", 4: "Polearms", 5: "Spears",
     6: "Blocking", 7: "Axes", 8: "Bows", 9: "ElementalMagic",
@@ -49,6 +53,61 @@ def read_str(b, o):
     if o + n > len(b):
         raise ParseError("truncated file: string body")
     return b[o:o + n].decode("utf-8", "replace"), o + n
+
+
+def _write_varint(val):
+    out = bytearray()
+    while True:
+        byte = val & 0x7F
+        val >>= 7
+        if val:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            break
+    return bytes(out)
+
+
+def write_str(s):
+    b = s.encode("utf-8")
+    return _write_varint(len(b)) + b
+
+
+def _write_string_list(strings):
+    return struct.pack("<i", len(strings)) + b"".join(write_str(s) for s in strings)
+
+
+def _is_inv_unique(s):
+    return s == "invslot1" or s == "invslot2" or s.startswith("invrows ")
+
+
+def _parse_inv_rows_from_uniques(uniques):
+    for u in uniques:
+        if u.startswith("invrows "):
+            try:
+                n = int(u.split(" ", 1)[1])
+                return max(INV_ROWS_MIN, min(INV_ROWS_MAX, n))
+            except (ValueError, IndexError):
+                pass
+    return INV_ROWS_MIN
+
+
+def _inv_entries_for_rows(rows):
+    rows = max(INV_ROWS_MIN, min(INV_ROWS_MAX, rows))
+    if rows <= INV_ROWS_MIN:
+        return []
+    entries = ["invrows %d" % rows, "invslot1"]
+    if rows >= 6:
+        entries.append("invslot2")
+    return entries
+
+
+def _uniques_with_rows(uniques, rows):
+    inv_start = next((i for i, u in enumerate(uniques) if _is_inv_unique(u)), len(uniques))
+    without = [u for u in uniques if not _is_inv_unique(u)]
+    inv_entries = _inv_entries_for_rows(rows)
+    pos = sum(1 for u in uniques[:inv_start] if not _is_inv_unique(u))
+    return without[:pos] + inv_entries + without[pos:]
 
 
 class Reader:
@@ -198,7 +257,8 @@ def parse_blob(blob):
     guardian_power, _ = r._skip_str()
     off = r.o; base["guardianPowerCooldown"] = off; r.f32()
 
-    r.i32()
+    inv_version_off = r.o
+    inv_version = r.i32()
     inv_count_off = r.o
     n = r.u16()
     items = []
@@ -214,7 +274,11 @@ def parse_blob(blob):
     for _ in range(r.i32()): r.s(); r.i32()
     for _ in range(r.i32()): r.s()
     for _ in range(r.i32()): r.s()
-    for _ in range(r.i32()): r.s()
+    uniques_off = r.o
+    nu = r.i32()
+    uniques = [r.s() for _ in range(nu)]
+    uniques_end = r.o
+    inv_rows = _parse_inv_rows_from_uniques(uniques)
     for _ in range(r.i32()): r.s()
     for _ in range(r.i32()): r.s()
     for _ in range(r.i32()): r.s(); r.s()
@@ -253,7 +317,10 @@ def parse_blob(blob):
         "guardian_power": guardian_power,
         "item_cheats": item_cheats,
         "inventory": items,
+        "inv_version_off": inv_version_off, "inv_version": inv_version,
         "inv_count_off": inv_count_off, "inv_items_end": inv_items_end,
+        "uniques": uniques, "uniques_off": uniques_off, "uniques_end": uniques_end,
+        "inv_rows": inv_rows,
         "sk_ver_off": sk_ver_off, "sk_count_off": sk_count_off,
         "sk_entries_off": sk_entries_off, "sk_end_off": sk_end_off,
     }
@@ -314,7 +381,7 @@ def _item_bytes(it):
 
 
 def write_character(ch, skills_levels, base_values, used_cheats, clear_item_cheats=False,
-                    items=None):
+                    items=None, inv_rows=None):
     body = bytearray(ch.body)
     body[ch.profile["flag_off"]] = 1 if used_cheats else 0
 
@@ -356,6 +423,11 @@ def write_character(ch, skills_levels, base_values, used_cheats, clear_item_chea
             seg = struct.pack("<H", len(items)) + b"".join(_item_bytes(it) for it in items)
             blob[ch.player["inv_count_off"]:ch.player["inv_items_end"]] = seg
 
+        if inv_rows is not None:
+            new_uniques = _uniques_with_rows(ch.player["uniques"], inv_rows)
+            seg = _write_string_list(new_uniques)
+            blob[ch.player["uniques_off"]:ch.player["uniques_end"]] = seg
+
         new_body = (bytes(body[:ch.profile["blob_len_off"]]) +
                     struct.pack("<i", len(blob)) + bytes(blob))
     return (struct.pack("<i", len(new_body)) + new_body +
@@ -363,7 +435,7 @@ def write_character(ch, skills_levels, base_values, used_cheats, clear_item_chea
 
 
 def save_character(ch, target_path, skills_levels, base_values, used_cheats,
-                   clear_item_cheats=False, items=None):
+                   clear_item_cheats=False, items=None, inv_rows=None):
     if os.path.exists(target_path):
         bak = target_path + ".bak"
         n = 2
@@ -375,7 +447,7 @@ def save_character(ch, target_path, skills_levels, base_values, used_cheats,
     else:
         backup_note = None
     data = write_character(ch, skills_levels, base_values, used_cheats,
-                           clear_item_cheats, items)
+                           clear_item_cheats, items, inv_rows)
     with open(target_path, "wb") as f:
         f.write(data)
     return backup_note

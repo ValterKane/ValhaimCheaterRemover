@@ -4,6 +4,7 @@ from tkinter import ttk, filedialog, messagebox
 
 from valheim_character_editor import (
     Character, ParseError, save_character, BASE_FIELDS, SKILLS,
+    INV_COLS, INV_ROWS_MIN, INV_ROWS_MAX,
 )
 import valheim_world_editor as world_editor
 import valheim_items as items_db
@@ -74,6 +75,10 @@ class EditorApp:
         self.inv_items = {}
         self.inv_selected = None
         self.inv_dirty = False
+        self.inv_rows_dirty = False
+        self.inv_rows = INV_ROWS_MIN
+        self.inv_cols = INV_COLS
+        self._loaded_inv_rows = INV_ROWS_MIN
 
         self._build_toolbar()
         self._build_notebook()
@@ -334,6 +339,19 @@ class EditorApp:
 
     def _build_tab_inv(self):
         f = self.tab_inv
+        rows_ctl = ttk.Frame(f)
+        rows_ctl.pack(fill="x", **PAD)
+        ttk.Label(rows_ctl, text="Inventory rows:").pack(side="left")
+        self.inv_rows_var = tk.StringVar(value=str(INV_ROWS_MIN))
+        self.inv_rows_spin = ttk.Spinbox(
+            rows_ctl, from_=INV_ROWS_MIN, to=INV_ROWS_MAX, width=4,
+            textvariable=self.inv_rows_var, command=self._on_inv_rows_change)
+        self.inv_rows_spin.pack(side="left", padx=(4, 8))
+        self.inv_rows_var.trace_add("write", lambda *_: self._on_inv_rows_change())
+        ttk.Label(rows_ctl,
+                  text="4 = default, 5 = Wider Pockets, 6 = both upgrades",
+                  foreground="#555").pack(side="left")
+
         ctl = ttk.Frame(f)
         ctl.pack(fill="x", **PAD)
         ttk.Label(ctl, text="Item:").pack(side="left")
@@ -360,15 +378,8 @@ class EditorApp:
                            "slots are replaced. Cheater-marked items are shown in red."),
                   foreground="#555", wraplength=680).pack(anchor="w", **PAD)
 
-        grid = ttk.Frame(f)
-        grid.pack(anchor="w", **PAD)
-        for y in range(4):
-            for x in range(8):
-                lbl = tk.Label(grid, text="", width=14, height=2, relief="groove",
-                               borderwidth=1, bg="#ececec", anchor="center")
-                lbl.grid(row=y, column=x, padx=1, pady=1, sticky="nsew")
-                lbl.bind("<Button-1>", lambda e, xx=x, yy=y: self._select_cell(xx, yy))
-                self.inv_cells[(x, y)] = lbl
+        self.inv_grid = ttk.Frame(f)
+        self.inv_grid.pack(anchor="w", **PAD)
 
         row2 = ttk.Frame(f)
         row2.pack(fill="x", **PAD)
@@ -380,13 +391,68 @@ class EditorApp:
         ttk.Button(row2, text="Clear all cheater marks",
                    command=self._clear_all_cheats).pack(side="left", padx=(6, 0))
 
+    def _rebuild_inv_grid(self):
+        for lbl in self.inv_cells.values():
+            lbl.destroy()
+        self.inv_cells = {}
+        for y in range(self.inv_rows):
+            for x in range(self.inv_cols):
+                lbl = tk.Label(self.inv_grid, text="", width=14, height=2, relief="groove",
+                               borderwidth=1, bg="#ececec", anchor="center")
+                lbl.grid(row=y, column=x, padx=1, pady=1, sticky="nsew")
+                lbl.bind("<Button-1>", lambda e, xx=x, yy=y: self._select_cell(xx, yy))
+                self.inv_cells[(x, y)] = lbl
+
+    def _parse_inv_rows(self):
+        try:
+            rows = int(self.inv_rows_var.get())
+        except ValueError:
+            rows = self.inv_rows
+        return max(INV_ROWS_MIN, min(INV_ROWS_MAX, rows))
+
+    def _items_in_rows(self, min_y):
+        return [(x, y) for (x, y), it in self.inv_items.items()
+                if it is not None and y >= min_y]
+
+    def _on_inv_rows_change(self):
+        new_rows = self._parse_inv_rows()
+        if new_rows == self.inv_rows:
+            return
+        if new_rows < self.inv_rows:
+            blocked = self._items_in_rows(new_rows)
+            if blocked:
+                self.inv_rows_var.set(str(self.inv_rows))
+                ys = sorted({y for _, y in blocked})
+                _err("Clear items in row(s) %s before reducing inventory size."
+                     % ", ".join(str(y + 1) for y in ys))
+                return
+        self.inv_rows = new_rows
+        self.inv_rows_dirty = (self.inv_rows != self._loaded_inv_rows)
+        sel = self.inv_selected
+        self._rebuild_inv_grid()
+        for (x, y) in self.inv_cells:
+            self._render_cell(x, y)
+        if sel is not None and sel in self.inv_cells:
+            self.inv_selected = sel
+            self._render_cell(*sel)
+        else:
+            self.inv_selected = None
+
     def _populate_inventory(self):
         self.inv_items = {}
         self.inv_selected = None
         self.inv_dirty = False
+        self.inv_rows_dirty = False
         if self.ch is not None and self.ch.player is not None:
+            self.inv_rows = self.ch.player["inv_rows"]
+            self._loaded_inv_rows = self.inv_rows
             for it in self.ch.player["inventory"]:
                 self.inv_items[(it["x"], it["y"])] = it
+        else:
+            self.inv_rows = INV_ROWS_MIN
+            self._loaded_inv_rows = INV_ROWS_MIN
+        self.inv_rows_var.set(str(self.inv_rows))
+        self._rebuild_inv_grid()
         for (x, y) in self.inv_cells:
             self._render_cell(x, y)
         self._update_cheat_note()
@@ -478,7 +544,7 @@ class EditorApp:
         self._render_cell(x, y)
 
     def _collect_inventory(self):
-        return [self.inv_items[(x, y)] for y in range(4) for x in range(8)
+        return [self.inv_items[(x, y)] for y in range(self.inv_rows) for x in range(self.inv_cols)
                 if self.inv_items.get((x, y)) is not None]
 
     def _update_cheat_note(self):
@@ -610,7 +676,9 @@ class EditorApp:
                 if txt:
                     base_values[key] = self._parse_float(txt, dict(BASE_FIELDS)[key])
             used_cheats = bool(self.cheat_var.get())
-            items = self._collect_inventory() if self.inv_dirty else None
+            inv_changed = self.inv_dirty or self.inv_rows_dirty
+            items = self._collect_inventory() if inv_changed else None
+            inv_rows = self.inv_rows if self.inv_rows_dirty else None
         except ValueError as e:
             _err(str(e))
             return
@@ -618,7 +686,8 @@ class EditorApp:
         target = self.ch.path
         try:
             backup = save_character(self.ch, target, skills_levels,
-                                    base_values, used_cheats, False, items)
+                                    base_values, used_cheats, False, items,
+                                    inv_rows)
         except (ParseError, OSError, ValueError) as e:
             _err("Failed to save: %s" % e)
             return

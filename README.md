@@ -12,9 +12,10 @@ Python + tkinter under the hood, so Linux and Steam Deck can run it from source
 - Cheater flag (m_usedCheats)
 - Skills — level and experience, add or remove
 - Stats — health, stamina, eitr, time since death, guardian power cooldown
-- Inventory — the 8×4 backpack grid. Add or replace an item by name or ID
-  (added items carry no cheater mark), unmark one cheater-flagged item or
-  clear every mark at once.
+- Inventory — the 8-column backpack grid, 4–6 rows (32–48 slots). Row count
+  matches in-game upgrades (Wider / Deep Pockets). Add or replace an item by
+  name or ID (added items carry no cheater mark), unmark one cheater-flagged
+  item or clear every mark at once.
 - World — combat, death penalty, resources, raids and portals
 
 Every save keeps a backup (.bak) and fixes the SHA-512 checksum so the game
