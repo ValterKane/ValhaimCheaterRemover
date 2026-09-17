@@ -7,6 +7,7 @@ from valheim_character_editor import (
     INV_COLS, INV_ROWS_MIN, INV_ROWS_MAX,
 )
 import valheim_world_editor as world_editor
+import valheim_world_db as world_db
 import valheim_items as items_db
 
 PAD = {"padx": 6, "pady": 3}
@@ -63,6 +64,8 @@ class EditorApp:
 
         self.ch = None
         self.world = None
+        self.world_db_path = None
+        self.world_data_files = []
         self.doc = "char"
         self.base_vars = {}
         self.skill_rows = {}
@@ -236,6 +239,18 @@ class EditorApp:
         ttk.Label(f, textvariable=self.world_keys, foreground="#555",
                   wraplength=640).pack(anchor="w", **PAD)
 
+        self.world_db_label = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.world_db_label, foreground="#555",
+                  wraplength=640).pack(anchor="w", **PAD)
+        cheat_row = ttk.Frame(f)
+        cheat_row.pack(fill="x", **PAD)
+        ttk.Button(cheat_row, text="Clear all cheater marks in world",
+                   command=self._clear_world_cheats).pack(side="left")
+        ttk.Label(cheat_row,
+                  text="Scans _main.N.db2/.db and .chunk files. "
+                       "Character backpack uses the Inventory tab.",
+                  foreground="#555", wraplength=520).pack(side="left", padx=(8, 0))
+
     def _on_canvas_resize(self, e):
         self.skills_canvas.itemconfigure(self._skills_win, width=e.width)
 
@@ -257,6 +272,8 @@ class EditorApp:
             _err(str(e))
             return
         self.world = world
+        self.world_db_path = world_db.db_for_world(wf)
+        self.world_data_files = world_db.world_data_files(wf)
         self.doc = "world"
         self.file_label.config(
             text="%s  (%s)" % (os.path.basename(os.path.dirname(wf)),
@@ -281,6 +298,58 @@ class EditorApp:
                 cb["values"] = labels
                 cb.set(next(o[1] for o in slider["options"] if o[0] == oid))
         self.world_keys.set("Keys: " + (", ".join(w.keys) if w.keys else "(none)"))
+        chunks = [p for p in self.world_data_files if p.lower().endswith(".chunk")]
+        if self.world_db_path and os.path.isfile(self.world_db_path):
+            db_note = os.path.basename(self.world_db_path)
+        else:
+            db_note = "no _main.N.db2/.db"
+        chunk_note = "%d chunk file(s)" % len(chunks) if chunks else "no .chunk files"
+        self.world_db_label.set("World data: %s, %s" % (db_note, chunk_note))
+
+    def _clear_world_cheats(self):
+        if self.world is None:
+            _err("Open a world folder first.")
+            return
+        if not self.world_data_files:
+            _err("No world data files (_main.N.db2/.db or .chunk) found for this world.")
+            return
+        self.status.set("Scanning world data files…")
+        self.root.update_idletasks()
+        try:
+            report = world_db.scan_world(self.world.path)
+        except OSError as e:
+            _err("Failed to read world data: %s" % e)
+            return
+        n = report["cheated_items"]
+        m = report["place_count"]
+        if n == 0:
+            messagebox.showinfo("Done",
+                                "No cheater-marked items found in the world files "
+                                "(%d file(s) scanned)." % len(report["files"]))
+            self.status.set("World scan: no cheater-marked items")
+            return
+        if not messagebox.askyesno(
+                "Clear cheater marks",
+                "Found %d cheater-marked item(s) in %d place(s) "
+                "(chests, drops, etc.) across %d file(s).\n\n"
+                "Remove the marks and keep the items?"
+                % (n, m, len(report["files"]))):
+            return
+        try:
+            report, backups = world_db.clear_cheated_in_world(self.world.path)
+        except OSError as e:
+            _err("Failed to save world data: %s" % e)
+            return
+        msg = "Removed cheater marks from %d item(s) in %d place(s)." % (
+            report.get("cleared", n), m)
+        if backups:
+            msg += "\nBackups: " + ", ".join("%s (%s)" % (os.path.basename(p), b)
+                                             for p, b in backups[:5])
+            if len(backups) > 5:
+                msg += ", …"
+        messagebox.showinfo("Done", msg)
+        self.status.set("Cleared %d cheater mark(s) in world data"
+                        % report.get("cleared", n))
 
     def ask_open(self):
         path = filedialog.askopenfilename(
