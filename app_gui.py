@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-import os, sys, traceback, datetime, struct, tkinter as tk
+import os, re, sys, traceback, datetime, struct, tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from valheim_character_editor import (
     Character, ParseError, save_character, BASE_FIELDS, SKILLS,
-    INV_ROWS_FALLBACK,
+    INV_ROWS_FALLBACK, decode_drop_key,
 )
 import valheim_world_editor as world_editor
 import valheim_items as items_db
 
 PAD = {"padx": 6, "pady": 3}
+INV_COLS = 8
+
+
+def pretty_name(prefab):
+    """ArmorPaddedCuirass -> Armor Padded Cuirass, for the grid and titles."""
+    s = re.sub(r"(?<=[a-z])(?=[A-Z0-9])|(?<=[A-Z])(?=[A-Z][a-z])", " ", prefab)
+    return s.replace("_", " ")
 
 
 def save_root():
@@ -58,8 +65,8 @@ class EditorApp:
     def __init__(self, root):
         self.root = root
         root.title("Valheim Character Editor")
-        root.geometry("940x650")
-        root.minsize(660, 440)
+        root.geometry("1040x700")
+        root.minsize(820, 520)
 
         self.ch = None
         self.world = None
@@ -131,17 +138,20 @@ class EditorApp:
         self.tab_base = ttk.Frame(nb)
         self.tab_skills = ttk.Frame(nb)
         self.tab_inv = ttk.Frame(nb)
+        self.tab_drops = ttk.Frame(nb)
         self.tab_world = ttk.Frame(nb)
         nb.add(self.tab_char, text="Character")
         nb.add(self.tab_base, text="Stats")
         nb.add(self.tab_skills, text="Skills")
         nb.add(self.tab_inv, text="Inventory")
+        nb.add(self.tab_drops, text="Drop luck")
         nb.add(self.tab_world, text="World")
 
         self._build_tab_char()
         self._build_tab_base()
         self._build_tab_skills()
         self._build_tab_inv()
+        self._build_tab_drops()
         self._build_tab_world()
 
     def _build_tab_char(self):
@@ -208,6 +218,60 @@ class EditorApp:
         for col, txt, w in (("Skill", "Skill", 26), ("level", "Level", 10),
                             ("acc", "Experience (to next level)", 20)):
             ttk.Label(hdr, text=txt, width=w, font=("TkDefaultFont", 9, "bold")).pack(side="left")
+
+    def _build_tab_drops(self):
+        f = self.tab_drops
+        self.drops_note = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.drops_note, foreground="#555",
+                  wraplength=680, justify="left").pack(anchor="w", **PAD)
+        body = ttk.Frame(f)
+        body.pack(fill="both", expand=True, **PAD)
+        cols = ("drop", "chance", "misses")
+        tv = ttk.Treeview(body, columns=cols, show="headings", selectmode="none")
+        tv.heading("drop", text="Drop")
+        tv.heading("chance", text="Chance")
+        tv.heading("misses", text="Misses in a row")
+        tv.column("drop", width=260, anchor="w")
+        tv.column("chance", width=90, anchor="e")
+        tv.column("misses", width=120, anchor="e")
+        vsb = ttk.Scrollbar(body, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        tv.pack(side="left", fill="both", expand=True)
+        self.drops_tree = tv
+        ttk.Label(f, text=("Read-only. Since Valheim 1.0.20 the game remembers how "
+                           "many times each rare drop has failed, per character, "
+                           "and nudges the odds up until it lands. One row per "
+                           "drop and chance; star levels raise the chance, so a "
+                           "creature can appear more than once."),
+                  foreground="#555", wraplength=680).pack(anchor="w", **PAD)
+
+    def _populate_drops(self):
+        tv = self.drops_tree
+        tv.delete(*tv.get_children())
+        ch = self.ch
+        if ch is None or ch.player is None:
+            self.drops_note.set("")
+            return
+        if ch.player["version"] < 34:
+            self.drops_note.set("This character was last saved before Valheim 1.0.20; "
+                                "drop luck is not stored yet.")
+            return
+        drops = ch.player["drops"]
+        if not drops:
+            self.drops_note.set("No drop luck recorded yet.")
+            return
+        rows = []
+        for d in drops:
+            name, permille = decode_drop_key(d["key"], items_db.ITEM_HASH_TO_NAME)
+            if name is None:
+                rows.append(("Unknown (key %d)" % d["key"], "", d["misses"]))
+            else:
+                rows.append((name, "%g%%" % (permille / 10.0), d["misses"]))
+        rows.sort(key=lambda r: (-r[2], r[0]))
+        for row in rows:
+            tv.insert("", "end", values=row)
+        self.drops_note.set("%d drop%s tracked." % (len(rows), "" if len(rows) == 1 else "s"))
 
     def _build_tab_world(self):
         f = self.tab_world
@@ -333,61 +397,140 @@ class EditorApp:
 
         self._rebuild_skill_rows()
         self._populate_inventory()
+        self._populate_drops()
+
+    # ------------------------------------------------------------------ inventory
 
     def _build_tab_inv(self):
         f = self.tab_inv
-        ctl = ttk.Frame(f)
-        ctl.pack(fill="x", **PAD)
-        ttk.Label(ctl, text="Item:").pack(side="left")
-        self.item_combo = ttk.Combobox(ctl, width=24, values=self.all_item_names[:300],
-                                       postcommand=self._filter_items)
-        self.item_combo.pack(side="left", padx=(2, 8))
-        ttk.Label(ctl, text="Stack:").pack(side="left")
-        self.inv_stack = ttk.Entry(ctl, width=5)
-        self.inv_stack.insert(0, "1")
-        self.inv_stack.pack(side="left", padx=(2, 8))
-        ttk.Label(ctl, text="Quality:").pack(side="left")
-        self.inv_quality = ttk.Entry(ctl, width=5)
-        self.inv_quality.insert(0, "1")
-        self.inv_quality.pack(side="left", padx=(2, 8))
-        ttk.Label(ctl, text="Durability%:").pack(side="left")
-        self.inv_durability = ttk.Entry(ctl, width=5)
-        self.inv_durability.insert(0, "100")
-        self.inv_durability.pack(side="left", padx=(2, 8))
-        ttk.Button(ctl, text="Place", command=self._place_item).pack(side="left")
-        ttk.Button(ctl, text="Clear", command=self._clear_cell).pack(side="left", padx=(6, 0))
-        ttk.Label(f, text=("Click a slot, then type an item name or numeric ID and "
-                           "press Place. Type a few letters and open the list (arrow "
-                           "button or Down) to narrow it. Empty slots add; occupied "
-                           "slots are replaced. Cheater-marked items are shown in red."),
-                  foreground="#555", wraplength=680).pack(anchor="w", **PAD)
+        outer = ttk.Frame(f)
+        outer.pack(fill="both", expand=True, **PAD)
+        left = ttk.Frame(outer)
+        left.pack(side="left", fill="both", expand=True)
+        right = ttk.Frame(outer)
+        right.pack(side="left", fill="y", padx=(12, 0))
 
-        self.inv_grid = ttk.Frame(f)
-        self.inv_grid.pack(anchor="w", **PAD)
+        self.inv_grid = ttk.Frame(left, takefocus=1)
+        self.inv_grid.pack(anchor="nw")
+        self.inv_grid.bind("<Delete>", lambda e: self._clear_cell())
+        self.inv_grid.bind("<BackSpace>", lambda e: self._clear_cell())
+        for key, dx, dy in (("<Left>", -1, 0), ("<Right>", 1, 0),
+                            ("<Up>", 0, -1), ("<Down>", 0, 1)):
+            self.inv_grid.bind(key, lambda e, dx=dx, dy=dy: self._move_selection(dx, dy))
+        self._cell_pos = {}
+        self._drag_from = None
+        self._dragging = False
         self._build_inv_grid()
 
-        row2 = ttk.Frame(f)
-        row2.pack(fill="x", **PAD)
+        ttk.Label(left, text=("Click a slot to inspect it. Drag a slot onto another to "
+                              "move or swap. Right-click for a menu; Delete clears. "
+                              "Cheater-marked items are red."),
+                  foreground="#555", wraplength=620, justify="left").pack(anchor="w", pady=(8, 0))
+        row2 = ttk.Frame(left)
+        row2.pack(fill="x", pady=(8, 0))
         self.inv_cheat_note = tk.StringVar(value="")
         ttk.Label(row2, textvariable=self.inv_cheat_note, foreground="#a22").pack(
             side="left", padx=(0, 12))
-        ttk.Button(row2, text="Unmark selected",
-                   command=self._unmark_selected).pack(side="left")
         ttk.Button(row2, text="Clear all cheater marks",
-                   command=self._clear_all_cheats).pack(side="left", padx=(6, 0))
+                   command=self._clear_all_cheats).pack(side="left")
+
+        self.cell_menu = tk.Menu(self.root, tearoff=0)
+        self.cell_menu.add_command(label="Remove cheater mark", command=self._unmark_selected)
+        self.cell_menu.add_command(label="Clear slot", command=self._clear_cell)
+
+        # slot inspector
+        ed = ttk.LabelFrame(right, text="Selected slot")
+        ed.pack(fill="x")
+        self.slot_title = tk.StringVar(value="Nothing selected")
+        ttk.Label(ed, textvariable=self.slot_title,
+                  font=("TkDefaultFont", 9, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 0))
+        self.slot_item = tk.StringVar(value="")
+        ttk.Label(ed, textvariable=self.slot_item, wraplength=240,
+                  justify="left").grid(row=1, column=0, columnspan=2, sticky="w", padx=6)
+        self.slot_vars = {}
+        self.slot_entries = []
+        for i, (key, label) in enumerate((("stack", "Stack"), ("quality", "Quality"),
+                                          ("durability", "Durability"))):
+            ttk.Label(ed, text=label + ":").grid(row=2 + i, column=0, sticky="e",
+                                                 padx=(6, 4), pady=2)
+            var = tk.StringVar()
+            ent = ttk.Entry(ed, textvariable=var, width=10)
+            ent.grid(row=2 + i, column=1, sticky="w", pady=2)
+            ent.bind("<Return>", lambda e: self._apply_slot())
+            self.slot_vars[key] = var
+            self.slot_entries.append(ent)
+        btns = ttk.Frame(ed)
+        btns.grid(row=5, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 6))
+        self.slot_apply = ttk.Button(btns, text="Apply", command=self._apply_slot)
+        self.slot_apply.pack(side="left")
+        self.slot_unmark = ttk.Button(btns, text="Unmark", command=self._unmark_selected)
+        self.slot_unmark.pack(side="left", padx=(6, 0))
+        self.slot_clear = ttk.Button(btns, text="Clear", command=self._clear_cell)
+        self.slot_clear.pack(side="left", padx=(6, 0))
+
+        # item picker
+        pk = ttk.LabelFrame(right, text="Put an item in the slot")
+        pk.pack(fill="both", expand=True, pady=(10, 0))
+        srow = ttk.Frame(pk)
+        srow.pack(fill="x", padx=6, pady=(4, 2))
+        self.item_search = tk.StringVar()
+        self.item_entry = ttk.Entry(srow, textvariable=self.item_search)
+        self.item_entry.pack(side="left", fill="x", expand=True)
+        self.item_entry.bind("<KeyRelease>", self._on_search_key)
+        self.item_entry.bind("<Return>", lambda e: self._place_from_list())
+        self.item_entry.bind("<Down>", self._focus_item_list)
+        ttk.Label(srow, text="×").pack(side="left", padx=(6, 2))
+        self.place_qty = ttk.Entry(srow, width=5)
+        self.place_qty.insert(0, "1")
+        self.place_qty.pack(side="left")
+        self.place_qty.bind("<Return>", lambda e: self._place_from_list())
+
+        lbf = ttk.Frame(pk)
+        lbf.pack(fill="both", expand=True, padx=6)
+        self.item_list = tk.Listbox(lbf, height=14, width=30, exportselection=False,
+                                    activestyle="none")
+        lsb = ttk.Scrollbar(lbf, orient="vertical", command=self.item_list.yview)
+        self.item_list.configure(yscrollcommand=lsb.set)
+        lsb.pack(side="right", fill="y")
+        self.item_list.pack(side="left", fill="both", expand=True)
+        self.item_list.bind("<Double-Button-1>", lambda e: self._place_from_list())
+        self.item_list.bind("<Return>", lambda e: self._place_from_list())
+        self.item_list.bind("<Escape>", lambda e: self.item_entry.focus_set())
+
+        prow = ttk.Frame(pk)
+        prow.pack(fill="x", padx=6, pady=(4, 6))
+        ttk.Button(prow, text="Place", command=self._place_from_list).pack(side="left")
+        self.item_count_note = tk.StringVar(value="")
+        ttk.Label(prow, textvariable=self.item_count_note,
+                  foreground="#555").pack(side="left", padx=(8, 0))
+        ttk.Label(pk, text=("Type to filter, Enter or double-click to place. A prefab "
+                            "name or numeric ID also works. New items start at quality "
+                            "1 and durability 100; edit the slot afterwards."),
+                  foreground="#555", wraplength=240, justify="left").pack(
+            anchor="w", padx=6, pady=(0, 6))
+        self._filter_items()
+        self._refresh_slot_editor()
 
     def _build_inv_grid(self):
         for lbl in self.inv_cells.values():
             lbl.destroy()
         self.inv_cells = {}
+        self._cell_pos = {}
         for y in range(self.inv_rows):
-            for x in range(8):
-                lbl = tk.Label(self.inv_grid, text="", width=14, height=2,
+            for x in range(INV_COLS):
+                lbl = tk.Label(self.inv_grid, text="", width=11, height=3,
+                               wraplength=80, justify="center",
                                relief="groove", borderwidth=1, bg="#ececec",
-                               anchor="center")
+                               anchor="center", cursor="hand2")
                 lbl.grid(row=y, column=x, padx=1, pady=1, sticky="nsew")
-                lbl.bind("<Button-1>", lambda e, xx=x, yy=y: self._select_cell(xx, yy))
+                lbl.bind("<ButtonPress-1>", lambda e, xx=x, yy=y: self._cell_press(xx, yy))
+                lbl.bind("<B1-Motion>", self._cell_drag)
+                lbl.bind("<ButtonRelease-1>", self._cell_release)
+                for seq in ("<Button-2>", "<Button-3>", "<Control-Button-1>"):
+                    lbl.bind(seq, lambda e, xx=x, yy=y: self._cell_menu(e, xx, yy))
                 self.inv_cells[(x, y)] = lbl
+                self._cell_pos[lbl] = (x, y)
 
     def _populate_inventory(self):
         self.inv_items = {}
@@ -403,45 +546,214 @@ class EditorApp:
         for (x, y) in self.inv_cells:
             self._render_cell(x, y)
         self._update_cheat_note()
+        self._refresh_slot_editor()
+
+    @staticmethod
+    def _item_name(item):
+        return items_db.ITEM_HASH_TO_NAME.get(item["hash"], str(item["hash"]))
 
     @staticmethod
     def _cell_text(item):
         if item is None:
             return ""
-        name = items_db.ITEM_HASH_TO_NAME.get(item["hash"], str(item["hash"]))
-        txt = "%s x%d" % (name, item["stack"]) if item["stack"] > 1 else name
-        return txt[:20]
+        name = pretty_name(items_db.ITEM_HASH_TO_NAME.get(item["hash"], str(item["hash"])))
+        extra = []
+        if item["stack"] > 1:
+            extra.append("×%d" % item["stack"])
+        if item["quality"] > 1:
+            extra.append("★%d" % item["quality"])
+        return name + ("\n" + "  ".join(extra) if extra else "")
 
     def _render_cell(self, x, y):
         lbl = self.inv_cells[(x, y)]
         item = self.inv_items.get((x, y))
         cheated = item is not None and item.get("cheated")
+        selected = (x, y) == self.inv_selected
         lbl.config(text=self._cell_text(item))
         if cheated:
-            bg, fg = ("#c0392b", "#ffffff") if (x, y) == self.inv_selected \
-                else ("#f2a6a6", "#5b0a0a")
-        elif (x, y) == self.inv_selected:
-            bg, fg = "#bfd9ff", "#000000"
+            bg, fg = ("#c0392b", "#ffffff") if selected else ("#f2a6a6", "#5b0a0a")
+        elif selected:
+            bg, fg = ("#bfd9ff", "#000000") if item else ("#d9e8ff", "#5a6b80")
         elif item is not None:
             bg, fg = "#ffffff", "#000000"
         else:
             bg, fg = "#ececec", "#808080"
-        lbl.config(bg=bg, fg=fg)
+        lbl.config(bg=bg, fg=fg, relief="solid" if selected else "groove")
 
     def _select_cell(self, x, y):
+        prev = self.inv_selected
         self.inv_selected = (x, y)
-        for (xx, yy) in self.inv_cells:
-            self._render_cell(xx, yy)
+        if prev in self.inv_cells:
+            self._render_cell(*prev)
+        self._render_cell(x, y)
+        self._refresh_slot_editor()
+
+    def _move_selection(self, dx, dy):
+        if self.inv_selected is None:
+            self._select_cell(0, 0)
+            return
+        x, y = self.inv_selected
+        nx = max(0, min(INV_COLS - 1, x + dx))
+        ny = max(0, min(self.inv_rows - 1, y + dy))
+        self._select_cell(nx, ny)
+
+    # --- mouse: click, drag to move/swap, right-click menu
+
+    def _cell_press(self, x, y):
+        self.inv_grid.focus_set()
+        self._drag_from = (x, y)
+        self._dragging = False
+        self._select_cell(x, y)
+
+    def _cell_drag(self, e):
+        if self._drag_from is None or self.inv_items.get(self._drag_from) is None:
+            return
+        if not self._dragging:
+            self._dragging = True
+            e.widget.config(cursor="fleur")
+
+    def _cell_release(self, e):
+        e.widget.config(cursor="hand2")
+        src, self._drag_from = self._drag_from, None
+        if not self._dragging or src is None:
+            return
+        self._dragging = False
+        target = self.root.winfo_containing(e.x_root, e.y_root)
+        dst = self._cell_pos.get(target)
+        if dst is not None and dst != src:
+            self._move_item(src, dst)
+
+    def _cell_menu(self, e, x, y):
+        self._select_cell(x, y)
+        item = self.inv_items.get((x, y))
+        self.cell_menu.entryconfig(0, state="normal" if item and item.get("cheated") else "disabled")
+        self.cell_menu.entryconfig(1, state="normal" if item else "disabled")
+        try:
+            self.cell_menu.tk_popup(e.x_root, e.y_root)
+        finally:
+            self.cell_menu.grab_release()
+
+    @staticmethod
+    def _relocated(item, pos):
+        # moving keeps the item bytes as they are; only the slot changes
+        it = dict(item)
+        it["x"], it["y"] = pos
+        if "raw" in it:
+            raw = bytearray(it["raw"])
+            raw[4], raw[5] = pos
+            it["raw"] = bytes(raw)
+        return it
+
+    def _move_item(self, src, dst):
+        a = self.inv_items.get(src)
+        if a is None:
+            return
+        b = self.inv_items.get(dst)
+        self.inv_items[dst] = self._relocated(a, dst)
+        self.inv_items[src] = self._relocated(b, src) if b is not None else None
+        self.inv_dirty = True
+        self.inv_selected = dst
+        self._render_cell(*src)
+        self._render_cell(*dst)
+        self._refresh_slot_editor()
+        verb = "Swapped" if b is not None else "Moved"
+        self.status.set("%s %s to slot %d,%d" % (verb, self._item_name(a), dst[0], dst[1]))
+
+    # --- slot inspector
+
+    def _refresh_slot_editor(self):
+        sel = self.inv_selected
+        item = self.inv_items.get(sel) if sel is not None else None
+        for ent in self.slot_entries:
+            ent.state(["!disabled" if item else "disabled"])
+        for btn in (self.slot_apply, self.slot_clear):
+            btn.state(["!disabled" if item else "disabled"])
+        self.slot_unmark.state(["!disabled" if item and item.get("cheated") else "disabled"])
+        if sel is None:
+            self.slot_title.set("Nothing selected")
+            self.slot_item.set("Click a slot in the grid.")
+            for var in self.slot_vars.values():
+                var.set("")
+            return
+        if item is None:
+            self.slot_title.set("Slot %d,%d — empty" % sel)
+            self.slot_item.set("Pick an item below to fill it.")
+            for var in self.slot_vars.values():
+                var.set("")
+            return
+        name = self._item_name(item)
+        self.slot_title.set("Slot %d,%d — %s" % (sel[0], sel[1], pretty_name(name)))
+        bits = ["%s  (ID %d)" % (name, item["hash"])]
+        if item.get("crafter_name"):
+            bits.append("Crafted by %s" % item["crafter_name"])
+        if item.get("world_level"):
+            bits.append("World level %d" % item["world_level"])
+        if item.get("cheated"):
+            bits.append("Marked as cheated")
+        self.slot_item.set("\n".join(bits))
+        self.slot_vars["stack"].set(str(item["stack"]))
+        self.slot_vars["quality"].set(str(item["quality"]))
+        self.slot_vars["durability"].set(("%.2f" % (item["durability"] / 100.0)).rstrip("0").rstrip("."))
+
+    def _apply_slot(self):
+        sel = self.inv_selected
+        item = self.inv_items.get(sel) if sel is not None else None
+        if item is None:
+            return
+        try:
+            stack = int(self.slot_vars["stack"].get().strip() or "1")
+            quality = int(self.slot_vars["quality"].get().strip() or "1")
+            dur = float((self.slot_vars["durability"].get().strip() or "0").replace(",", "."))
+        except ValueError:
+            _err("Stack and quality must be whole numbers; durability a number.")
+            return
+        stack = max(1, min(65535, stack))
+        quality = max(1, min(65535, quality))
+        durability = max(0, min(2147483647, int(round(dur * 100))))
+        if (stack, quality, durability) == (item["stack"], item["quality"], item["durability"]):
+            self.status.set("No change")
+            return
+        new = dict(item)
+        new.pop("raw", None)            # re-encoded from fields; extras are kept
+        new.update(stack=stack, quality=quality, durability=durability)
+        self.inv_items[sel] = new
+        self.inv_dirty = True
+        self._render_cell(*sel)
+        self._refresh_slot_editor()
+        self.status.set("Updated %s in slot %d,%d" % (self._item_name(new), sel[0], sel[1]))
+
+    # --- item picker
+
+    def _on_search_key(self, e):
+        if e.keysym in ("Up", "Down", "Return", "Escape", "Tab"):
+            return
+        self._filter_items()
+
+    def _focus_item_list(self, e=None):
+        if self.item_list.size():
+            self.item_list.focus_set()
+            self.item_list.selection_clear(0, "end")
+            self.item_list.selection_set(0)
+            self.item_list.activate(0)
+            self.item_list.see(0)
+        return "break"
 
     def _filter_items(self):
-        txt = self.item_combo.get().strip()
-        if not txt:
-            self.item_combo["values"] = self.all_item_names[:300]
-            return
-        low = txt.lower()
-        matches = [n for n in self.all_item_names if low in n.lower()]
-        matches.sort(key=lambda n: (not n.lower().startswith(low), n.lower()))
-        self.item_combo["values"] = matches[:300]
+        txt = self.item_search.get().strip().lower().replace(" ", "")
+        if txt:
+            matches = [n for n in self.all_item_names if txt in n.lower()]
+            matches.sort(key=lambda n: (not n.lower().startswith(txt), n.lower()))
+        else:
+            matches = self.all_item_names
+        self._item_matches = matches
+        self.item_list.delete(0, "end")
+        for n in matches:
+            self.item_list.insert("end", n)
+        if matches:
+            self.item_list.selection_clear(0, "end")
+            self.item_list.selection_set(0)
+            self.item_list.activate(0)
+        self.item_count_note.set("%d item%s" % (len(matches), "" if len(matches) == 1 else "s"))
 
     def _resolve_item(self, txt):
         t = txt.strip()
@@ -455,43 +767,69 @@ class EditorApp:
             pass
         return self._name_lower.get(t.lower())
 
-    def _place_item(self):
-        if self.inv_selected is None:
-            _err("Select a slot first (click one in the grid).")
+    def _picked_item(self):
+        # an exact name or numeric ID in the box wins; otherwise the list selection
+        h = self._resolve_item(self.item_search.get())
+        if h is not None:
+            return h
+        sel = self.item_list.curselection()
+        if sel:
+            return items_db.ITEM_NAME_TO_HASH[self._item_matches[sel[0]]]
+        return None
+
+    def _first_empty_slot(self):
+        for y in range(self.inv_rows):
+            for x in range(INV_COLS):
+                if self.inv_items.get((x, y)) is None:
+                    return (x, y)
+        return None
+
+    def _place_from_list(self):
+        if self.ch is None or self.ch.player is None:
+            _err("Open a character with player data first.")
             return
-        h = self._resolve_item(self.item_combo.get())
+        h = self._picked_item()
         if h is None:
-            _err("Unknown item name or ID: %r" % self.item_combo.get())
+            _err("Pick an item from the list, or type a prefab name or numeric ID.")
             return
         try:
-            stack = max(1, int(self.inv_stack.get() or "1"))
-            quality = max(1, int(self.inv_quality.get() or "1"))
-            dur_pct = float((self.inv_durability.get() or "100").replace(",", "."))
+            qty = max(1, min(65535, int(self.place_qty.get().strip() or "1")))
         except ValueError:
-            _err("Stack, Quality and Durability must be numbers.")
+            _err("Quantity must be a whole number.")
             return
-        x, y = self.inv_selected
-        self.inv_items[(x, y)] = {
-            "hash": h, "x": x, "y": y, "stack": stack, "quality": quality,
-            "durability": max(0, int(round(dur_pct * 100))),
-            "cheated": False, "world_level": 0,
+        slot = self.inv_selected or self._first_empty_slot()
+        if slot is None:
+            _err("The inventory is full. Select a slot to replace.")
+            return
+        replaced = self.inv_items.get(slot)
+        x, y = slot
+        self.inv_items[slot] = {
+            "hash": h, "x": x, "y": y, "stack": qty, "quality": 1,
+            "durability": 10000, "cheated": False, "world_level": 0,
         }
         self.inv_dirty = True
+        self.inv_selected = slot
         self._render_cell(x, y)
+        self._refresh_slot_editor()
+        self._update_cheat_note()
         name = items_db.ITEM_HASH_TO_NAME.get(h, str(h))
-        self.status.set("Placed %s x%d at (%d,%d)" % (name, stack, x, y))
+        what = "Replaced %s with" % self._item_name(replaced) if replaced else "Placed"
+        self.status.set("%s %s ×%d in slot %d,%d" % (what, name, qty, x, y))
 
     def _clear_cell(self):
-        if self.inv_selected is None:
-            _err("Select a slot first (click one in the grid).")
+        sel = self.inv_selected
+        if sel is None or self.inv_items.get(sel) is None:
             return
-        x, y = self.inv_selected
-        self.inv_items[(x, y)] = None
+        name = self._item_name(self.inv_items[sel])
+        self.inv_items[sel] = None
         self.inv_dirty = True
-        self._render_cell(x, y)
+        self._render_cell(*sel)
+        self._refresh_slot_editor()
+        self._update_cheat_note()
+        self.status.set("Cleared %s from slot %d,%d" % (name, sel[0], sel[1]))
 
     def _collect_inventory(self):
-        return [self.inv_items[(x, y)] for y in range(self.inv_rows) for x in range(8)
+        return [self.inv_items[(x, y)] for y in range(self.inv_rows) for x in range(INV_COLS)
                 if self.inv_items.get((x, y)) is not None]
 
     def _update_cheat_note(self):
@@ -504,18 +842,16 @@ class EditorApp:
             self.inv_cheat_note.set("No cheater-marked items (%d items)" % len(items))
 
     def _unmark_selected(self):
-        if self.inv_selected is None:
-            _err("Select a slot first (click one in the grid).")
-            return
-        item = self.inv_items.get(self.inv_selected)
+        sel = self.inv_selected
+        item = self.inv_items.get(sel) if sel is not None else None
         if item is None or not item.get("cheated"):
-            _err("That slot has no cheater-marked item.")
             return
         item["cheated"] = False
         self.inv_dirty = True
-        self._render_cell(*self.inv_selected)
+        self._render_cell(*sel)
+        self._refresh_slot_editor()
         self._update_cheat_note()
-        self.status.set("Removed cheater mark from (%d,%d)" % self.inv_selected)
+        self.status.set("Removed cheater mark from %s" % self._item_name(item))
 
     def _clear_all_cheats(self):
         n = 0
@@ -527,6 +863,7 @@ class EditorApp:
             self.inv_dirty = True
             for (x, y) in self.inv_cells:
                 self._render_cell(x, y)
+            self._refresh_slot_editor()
             self._update_cheat_note()
             self.status.set("Removed cheater mark from %d item(s)" % n)
         else:

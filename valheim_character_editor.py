@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import struct, hashlib, sys, os, shutil, datetime
 
-PROFILE_VERSION = 46
-PLAYERDATA_VERSION = 33
+# Valheim 1.0.20 bumped both (46/33 -> 47/34) without changing the layout
+# this editor reads; 34 only appends data after the last field we touch.
+PROFILE_VERSIONS = (46, 47)
+PLAYERDATA_VERSIONS = (33, 34)
 INV_ROWS_FALLBACK = 4      # backpack rows before any upgrade
 INV_ROWS_MAX = 256         # y is one byte, so no item can sit past row 255
 
@@ -29,6 +31,10 @@ BASE_FIELDS = [
 
 class ParseError(Exception):
     pass
+
+
+def _fmt_versions(vs):
+    return "%d-%d" % (min(vs), max(vs)) if len(vs) > 1 else str(vs[0])
 
 
 def _varint(b, o):
@@ -104,24 +110,29 @@ def _read_num_items(r):
 
 
 def read_item(r):
+    # durability is fixed-point: hundredths of a point (10000 = 100.0)
     dur = r.i32()
     x = r.byte(); y = r.byte(); wl = r.byte()
     flags = r.byte()
     quality = r.u16() if flags & 4 else 1
     stack = r.u16() if flags & 8 else 1
-    if flags & 0x10:
-        r.i32()
+    variant = r.i32() if flags & 0x10 else 0
+    crafter_id, crafter_name = 0, ""
     if flags & 0x20:
-        r.i64(); r.s()
+        crafter_id = r.i64(); crafter_name = r.s()
     phash = r.i32() if flags & 0x40 else 0
+    custom = []
     if flags & 0x80:
         for _ in range(_read_num_items(r)):
-            r.s(); r.s()
+            k = r.s(); v = r.s()
+            custom.append((k, v))
     cheated_off = r.o
     cheated = r.byte() & 1
     return {
         "hash": phash, "x": x, "y": y, "world_level": wl,
         "quality": quality, "stack": stack, "durability": dur,
+        "variant": variant, "crafter_id": crafter_id, "crafter_name": crafter_name,
+        "custom": custom, "flags": flags,
         "cheated": bool(cheated), "cheated_off": cheated_off,
     }
 
@@ -129,9 +140,9 @@ def read_item(r):
 def parse_profile(body):
     r = Reader(body)
     ver = r.i32(); nstats = r.i32(); nbuckets = r.i32()
-    if ver != PROFILE_VERSION:
-        raise ParseError("profile version %d (only %d is supported - the current game)"
-                         % (ver, PROFILE_VERSION))
+    if ver not in PROFILE_VERSIONS:
+        raise ParseError("profile version %d (supported: %s - the current game)"
+                         % (ver, _fmt_versions(PROFILE_VERSIONS)))
     if nstats != 205 or not (1 <= nbuckets <= 20):
         raise ParseError("unexpected parameters (stats=%d, buckets=%d)" % (nstats, nbuckets))
     for _ in range(nbuckets):
@@ -203,9 +214,9 @@ def inv_rows_for(items, declared):
 def parse_blob(blob):
     r = Reader(blob)
     pd = r.i32()
-    if pd != PLAYERDATA_VERSION:
-        raise ParseError("player data version %d (only %d is supported)"
-                         % (pd, PLAYERDATA_VERSION))
+    if pd not in PLAYERDATA_VERSIONS:
+        raise ParseError("player data version %d (supported: %s)"
+                         % (pd, _fmt_versions(PLAYERDATA_VERSIONS)))
 
     base = {}
     off = r.o
@@ -263,8 +274,13 @@ def parse_blob(blob):
     off = r.o; base["maxEitr"] = off; r.f32()
     off = r.o; base["eitr"] = off; r.f32()
     ln = r.i32(); r.o += ln
-    if r.o != len(blob):
-        raise ParseError("player data end mismatch (%d of %d)" % (r.o, len(blob)))
+    tail_off = r.o
+    # Player data 34 (game 1.0.20) appends the drop-luck state past this
+    # point. It is only ever read; every write below patches the blob in
+    # place, so whatever sits there is kept byte for byte.
+    if tail_off > len(blob) or (pd < 34 and tail_off != len(blob)):
+        raise ParseError("player data end mismatch (%d of %d)" % (tail_off, len(blob)))
+    drops = parse_drop_state(blob, tail_off) if pd >= 34 else []
 
     return {
         "base": base,
@@ -275,7 +291,40 @@ def parse_blob(blob):
         "inv_count_off": inv_count_off, "inv_items_end": inv_items_end,
         "sk_ver_off": sk_ver_off, "sk_count_off": sk_count_off,
         "sk_entries_off": sk_entries_off, "sk_end_off": sk_end_off,
+        "version": pd, "tail_off": tail_off, "drops": drops,
     }
+
+
+def parse_drop_state(blob, off):
+    """The 1.0.20 tail: int32 count, then (int32 key, int32 misses) pairs.
+
+    Key = stable hash of the drop prefab + drop chance in tenths of a percent,
+    so one prefab shows up once per chance (star levels raise it). The value is
+    how many rolls have missed in a row; the game keeps it across sessions so
+    rare drops even out. Anything after the pairs is left undecoded."""
+    try:
+        r = Reader(blob)
+        r.o = off
+        n = r.i32()
+        if not (0 <= n <= 100000):
+            return []
+        return [{"key": r.i32(), "misses": r.i32()} for _ in range(n)]
+    except ParseError:
+        return []
+
+
+def decode_drop_key(key, hash_to_name):
+    """Split a drop-state key into (prefab name, chance in tenths of a percent).
+
+    Keys are the prefab's stable hash plus the per-mille chance, and chances
+    are at most 1000, so the hash is whichever known one sits within that
+    distance below the key. Unknown prefabs come back as (None, None)."""
+    k = key & 0xffffffff
+    for h, name in hash_to_name.items():
+        d = (k - (h & 0xffffffff)) & 0xffffffff
+        if 0 < d <= 1000:
+            return name, d
+    return None, None
 
 
 class Character:
@@ -306,20 +355,57 @@ def pack_f32(v):
     return struct.pack("<f", v)
 
 
+def _write_str(s):
+    body = s.encode("utf-8")
+    n = len(body)
+    out = bytearray()
+    while True:
+        byte = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            break
+    return bytes(out) + body
+
+
 def _write_item(it):
+    quality = int(it.get("quality", 1))
+    stack = int(it.get("stack", 1))
+    variant = int(it.get("variant", 0))
+    crafter_id = int(it.get("crafter_id", 0))
+    crafter_name = it.get("crafter_name", "") or ""
+    custom = list(it.get("custom", []))
+    # bits 0x01/0x02 are the game's own; keep whatever the item had
+    flags = (int(it.get("flags", 0)) & 0x03) | 0x40
+    if quality != 1:
+        flags |= 4
+    if stack != 1:
+        flags |= 8
+    if variant:
+        flags |= 0x10
+    if crafter_id or crafter_name:
+        flags |= 0x20
+    if custom:
+        flags |= 0x80
     b = bytearray()
     b += struct.pack("<i", int(it["durability"]))
-    flags = 0x40
-    if it["quality"] != 1:
-        flags |= 4
-    if it["stack"] != 1:
-        flags |= 8
     b += bytes([it["x"], it["y"], it.get("world_level", 0), flags])
-    if it["quality"] != 1:
-        b += struct.pack("<H", it["quality"])
-    if it["stack"] != 1:
-        b += struct.pack("<H", it["stack"])
+    if flags & 4:
+        b += struct.pack("<H", quality)
+    if flags & 8:
+        b += struct.pack("<H", stack)
+    if flags & 0x10:
+        b += struct.pack("<i", variant)
+    if flags & 0x20:
+        b += struct.pack("<q", crafter_id) + _write_str(crafter_name)
     b += struct.pack("<i", it["hash"])
+    if flags & 0x80:
+        n = len(custom)
+        b += bytes([0x80 | (n >> 8), n & 0xFF]) if n >= 0x80 else bytes([n])
+        for k, v in custom:
+            b += _write_str(k) + _write_str(v)
     b += bytes([1 if it.get("cheated") else 0])
     return bytes(b)
 

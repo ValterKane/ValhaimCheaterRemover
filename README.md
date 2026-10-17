@@ -14,10 +14,13 @@ can run it from source (see Build from source below).
 - Cheater flag (m_usedCheats)
 - Skills — level and experience, add or remove
 - Stats — health, stamina, eitr, time since death, guardian power cooldown
-- Inventory — the 8×4 backpack grid. Add or replace an item by name or ID
-  (added items carry no cheater mark), unmark one cheater-flagged item or
-  clear every mark at once.
+- Inventory — the backpack grid. Click a slot to see and change its stack,
+  quality and durability; drag slots to move or swap; search the item list
+  and place by name or ID (added items carry no cheater mark); unmark one
+  cheater-flagged item or clear every mark at once.
 - World — combat, death penalty, resources, raids and portals
+- Drop luck (view only) — the per-character miss counters Valheim 1.0.20
+  keeps for rare drops, decoded to item name and chance
 
 Every save keeps a backup (.bak) and fixes the SHA-512 checksum so the game
 still opens the file.
